@@ -21,9 +21,12 @@ jobs:
           cache: 'maven'
       - name: Build
         run: mvn clean install
-      - name: Upload Build Artifact
+      - name: Extract Maven project version
+        id: get_version
+        run: echo "VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_OUTPUT
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CoreProtect-Build
-          path: target/*.jar
-          retention-days: 5 
+          # Use the version extracted in the previous step
+          name: CoreProtect-${{ steps.get_version.outputs.VERSION }}
+          path: target/CoreProtect-*.jar
