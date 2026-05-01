@@ -20,4 +20,10 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
       - name: Build
-        run: mvn -B verify
+        run: mvn clean install
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CoreProtect-Build
+          path: target/*.jar
+          retention-days: 5 
