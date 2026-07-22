@@ -2,7 +2,7 @@ name: Build
 on:
   push:
     branches:
-      - master
+      - 24.1
   pull_request:
     types: [opened, synchronize, reopened]
 jobs:
@@ -20,4 +20,13 @@ jobs:
           distribution: 'temurin'
           cache: 'maven'
       - name: Build
-        run: mvn -B verify
+        run: mvn clean install
+      - name: Extract Maven project version
+        id: get_version
+        run: echo "VERSION=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_OUTPUT
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Use the version extracted in the previous step
+          name: CoreProtect-${{ steps.get_version.outputs.VERSION }}
+          path: target/CoreProtect-*.jar
