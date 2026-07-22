@@ -21,9 +21,11 @@ import org.bukkit.Location;
 import net.coreprotect.database.ConsumerEntitySpawnUpdates;
 import net.coreprotect.database.Database;
 import net.coreprotect.database.EntitySpawnUpdateCoordinator;
+import net.coreprotect.database.statement.EntitySpawnStatement;
 import net.coreprotect.model.action.LookupActions;
 import net.coreprotect.model.entity.EntityContainerRollbackUpdate;
 import net.coreprotect.model.entity.EntitySpawnData;
+import net.coreprotect.model.entity.EntitySpawnIdentity;
 import net.coreprotect.utility.DatabaseUtils;
 import net.coreprotect.utility.ErrorReporter;
 import net.coreprotect.utility.WorldUtils;
@@ -144,21 +146,23 @@ final class ClickHouseEntitySpawnUpdates implements ConsumerEntitySpawnUpdates {
         }
     }
 
-    void checkpointLocation(int trackingRowId, int worldId, double x, double y, double z, float yaw, float pitch) throws Exception {
+    boolean checkpointLocation(int trackingRowId, int worldId, double x, double y, double z, float yaw, float pitch) throws Exception {
         ClickHouseEntityState state = requireState(trackingRowId);
         if (state.isRemoved()) {
-            return;
+            return false;
         }
         append(trackingRowId, state.withLocation(worldId, x, y, z, yaw, pitch));
+        return true;
     }
 
     @Override
-    public void apply(EntitySpawnData data) {
+    public EntitySpawnIdentity apply(EntitySpawnData data) {
         Objects.requireNonNull(data, "data");
         ensureOpen();
         if (!coordinator.begin(data)) {
-            return;
+            return null;
         }
+        EntitySpawnIdentity createdIdentity = null;
         try {
             switch (data.getOperation()) {
                 case VERIFY:
@@ -168,7 +172,7 @@ final class ClickHouseEntitySpawnUpdates implements ConsumerEntitySpawnUpdates {
                     updateLocation(data);
                     break;
                 case REMOVED:
-                    remove(data);
+                    createdIdentity = remove(data);
                     break;
                 case REVIVED:
                     revive(data);
@@ -187,6 +191,7 @@ final class ClickHouseEntitySpawnUpdates implements ConsumerEntitySpawnUpdates {
             coordinator.failed(data);
             Database.handleWriteFailure(exception);
         }
+        return createdIdentity;
     }
 
     @Override
@@ -211,6 +216,11 @@ final class ClickHouseEntitySpawnUpdates implements ConsumerEntitySpawnUpdates {
             coordinator.combinedFailed(data);
             Database.handleWriteFailure(exception);
         }
+    }
+
+    @Override
+    public void identityFound(UUID uuid) {
+        coordinator.entityFound(uuid);
     }
 
     @Override
@@ -250,7 +260,7 @@ final class ClickHouseEntitySpawnUpdates implements ConsumerEntitySpawnUpdates {
 
     private void verify(EntitySpawnData data) throws Exception {
         if (findByUuid(data.getUuid(), false) == null) {
-            coordinator.verificationMissing(data.getUuid());
+            coordinator.verificationMissing(data);
         }
         else {
             coordinator.verificationFound(data);
@@ -260,18 +270,23 @@ final class ClickHouseEntitySpawnUpdates implements ConsumerEntitySpawnUpdates {
     private void updateLocation(EntitySpawnData data) throws Exception {
         ClickHouseEntityState state = findByUuid(data.getUuid(), false);
         if (state == null) {
-            coordinator.locationMissing(data.getUuid());
+            coordinator.locationMissing(data);
             return;
         }
         append(toTrackingRowId(state.getPointer().getRowId()), withLocation(state, data.getLocation()));
         coordinator.locationFound(data);
     }
 
-    private void remove(EntitySpawnData data) throws Exception {
+    private EntitySpawnIdentity remove(EntitySpawnData data) throws Exception {
         ClickHouseEntityState state = findByUuid(data.getUuid(), false);
         if (state != null) {
             append(toTrackingRowId(state.getPointer().getRowId()), withLocation(state, data.getLocation()).withData(null).withRemoved(true));
+            return null;
         }
+        if (findByUuid(data.getUuid(), true) != null) {
+            return null;
+        }
+        return EntitySpawnStatement.insertTerminalIdentity(owner, data);
     }
 
     private void revive(EntitySpawnData data) throws Exception {

@@ -5,6 +5,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
@@ -39,6 +40,8 @@ public class Consumer extends Process implements Runnable, Thread.UncaughtExcept
     private static volatile boolean backgroundPurgePausesPersistence = false;
     private static volatile boolean databaseReloadPaused = false;
     private static volatile boolean databaseReloadRunning = false;
+    private static boolean databaseReloadBlockedForShutdown = false;
+    private static CompletableFuture<Void> databaseReloadShutdownSignal = new CompletableFuture<>();
     public static volatile int currentConsumer = 0;
     public static volatile boolean isPaused = false;
     public static volatile boolean transacting = false;
@@ -114,6 +117,9 @@ public class Consumer extends Process implements Runnable, Thread.UncaughtExcept
         synchronized (rollbackPurgeGate) {
             persistenceHalted = false;
             pendingRollbackPublications = 0;
+            databaseReloadBlockedForShutdown = false;
+            databaseReloadShutdownSignal.complete(null);
+            databaseReloadShutdownSignal = new CompletableFuture<>();
         }
         databaseReloadPaused = false;
         databaseReloadRunning = false;
@@ -195,6 +201,9 @@ public class Consumer extends Process implements Runnable, Thread.UncaughtExcept
 
     public static OperationStartResult beginDatabaseReload() {
         synchronized (rollbackPurgeGate) {
+            if (databaseReloadBlockedForShutdown) {
+                return OperationStartResult.INTERRUPTED;
+            }
             if (persistenceHalted) {
                 return OperationStartResult.PERSISTENCE_HALTED;
             }
@@ -213,6 +222,19 @@ public class Consumer extends Process implements Runnable, Thread.UncaughtExcept
         return OperationStartResult.STARTED;
     }
 
+    public static void blockDatabaseReloadForShutdown() {
+        synchronized (rollbackPurgeGate) {
+            databaseReloadBlockedForShutdown = true;
+            databaseReloadShutdownSignal.complete(null);
+        }
+    }
+
+    public static CompletableFuture<Void> databaseReloadShutdownSignal() {
+        synchronized (rollbackPurgeGate) {
+            return databaseReloadShutdownSignal.copy();
+        }
+    }
+
     public static void lockDatabaseReload() {
         databaseLifecycle.writeLock().lock();
     }
@@ -223,19 +245,19 @@ public class Consumer extends Process implements Runnable, Thread.UncaughtExcept
 
     public static void endDatabaseReload(boolean resumePersistence) {
         try {
+            if (databaseLifecycle.isWriteLockedByCurrentThread()) {
+                databaseLifecycle.writeLock().unlock();
+            }
+        }
+        finally {
             synchronized (rollbackPurgeGate) {
-                databaseReloadRunning = false;
                 if (resumePersistence) {
                     databaseReloadPaused = false;
                     if (!ConfigHandler.converterRunning) {
                         isPaused = false;
                     }
                 }
-            }
-        }
-        finally {
-            if (databaseLifecycle.isWriteLockedByCurrentThread()) {
-                databaseLifecycle.writeLock().unlock();
+                databaseReloadRunning = false;
             }
         }
     }
